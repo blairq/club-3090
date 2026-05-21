@@ -102,12 +102,18 @@
 # Tensor-parallel: 1
 services:
   vllm-qwen36-27b:
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-${VLLM_NIGHTLY_SHA}}
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest${VLLM_NIGHTLY_SHA}}
     container_name: "${ESTATE_CONTAINER:-vllm-qwen36-27b}"
+    hostname: vllm-qwen36
     restart: "no"
     ports:
       - "${BIND_HOST:-0.0.0.0}:${ESTATE_PORT:-${PORT:-8020}}:8000"
+    networks:
+      lanbridge:
+        ipv4_address: 192.168.1.200
+        ipv6_address: 2803:9810:b6ea:b800::2
     volumes:
+      - /home/usuario/Proyectos/dual_stack_proxy.py:/app/dual_stack_proxy.py:ro
       - ${MODEL_DIR:-../../../../../models-cache}:/root/.cache/huggingface
       # torch.compile + Triton kernel caches — first boot warms (~60-90 sec);
       # subsequent boots reuse cached graphs. Pattern from Sander's PROD launch.
@@ -147,6 +153,7 @@ services:
       # Uncomment the next line to pin to a specific GPU (e.g. GPU 0):
       # - CUDA_VISIBLE_DEVICES=0
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
       - VLLM_WORKER_MULTIPROC_METHOD=spawn
       - NCCL_CUMEM_ENABLE=0
       - NCCL_P2P_DISABLE=1
@@ -232,6 +239,7 @@ services:
         python3 /patches/qwen3coder_tool_parser_deferred_commit.py
         # VLLM_ENFORCE_EAGER=1 in compose/.env disables CUDA graphs — use on
         # hardware where Cliff 2 GDN activation spikes occur at runtime.
+        python3 /app/dual_stack_proxy.py 8000 127.0.0.1 8001 &
         exec vllm serve ${VLLM_ENFORCE_EAGER:+--enforce-eager} "$@"
       - --
     command:
@@ -296,6 +304,11 @@ services:
       # decode batches still get cudagraph capture. Forcing FULL_AND_PIECEWISE
       # explicitly produces no measurable benefit (verified 2026-04-27).
       - --host
-      - 0.0.0.0
+      - "127.0.0.1"
       - --port
-      - "8000"
+      - "8001"
+
+
+networks:
+  lanbridge:
+    external: true
