@@ -110,7 +110,7 @@ services:
       - "${BIND_HOST:-0.0.0.0}:${ESTATE_PORT:-${PORT:-8020}}:8000"
     networks:
       lanbridge:
-        ipv4_address: 192.168.1.200
+        ipv4_address: 192.168.1.222
         ipv6_address: 2803:9810:b6ea:b800::2
     volumes:
       - /home/usuario/Proyectos/dual_stack_proxy.py:/app/dual_stack_proxy.py:ro
