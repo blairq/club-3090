@@ -1,0 +1,139 @@
+# Custom compose with IPv6 support and hostname reporting
+# Based on docker-compose.yml original
+services:
+  vllm-qwen36-27b:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly${VLLM_NIGHTLY_SHA}}
+    container_name: "${ESTATE_CONTAINER:-vllm-qwen36-27b}"
+    restart: "no"
+    ports:
+      - "${BIND_HOST:-0.0.0.0}:${ESTATE_PORT:-${PORT:-8020}}:8000"
+    volumes:
+      - ${MODEL_DIR:-../../../../../models-cache}:/root/.cache/huggingface
+      - ../../cache/torch_compile:/root/.cache/vllm/torch_compile_cache
+      - ../../cache/triton:/root/.triton/cache
+      - ../../patches/genesis/vllm/_genesis:/usr/local/lib/python3.12/dist-packages/vllm/_genesis:ro
+      - ../../patches/local/qwen3coder_tool_parser_deferred_commit.py:/patches/qwen3coder_tool_parser_deferred_commit.py:ro
+      - ../../patches/vllm-pr35936-required-fallback/vllm/entrypoints/openai/chat_completion/serving.py:/etc/club3090/pr35936-chat-completion-serving.py:ro
+      - ../../patches/vllm-pr35936-required-fallback/vllm/entrypoints/openai/engine/serving.py:/etc/club3090/pr35936-engine-serving.py:ro
+      - ../../patches/vllm-pr35936-required-fallback/install.sh:/etc/club3090/install-pr35936.sh:ro
+      - ../../patches/vllm-pr41800-truncate-prompt-tokens/install.sh:/etc/club3090/install-pr41800.sh:ro
+      - ../../patches/froggeric-chat-template/chat_template.jinja:/etc/qwen-froggeric-chat-template.jinja:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${ESTATE_GPUS:-${NVIDIA_VISIBLE_DEVICES:-all}}
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - NCCL_CUMEM_ENABLE=0
+      - NCCL_P2P_DISABLE=1
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1
+      - VLLM_NO_USAGE_STATS=1
+      - PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:512}
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_USE_FLASHINFER_SAMPLER=1
+      - OMP_NUM_THREADS=1
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - TRITON_CACHE_DIR=/root/.triton/cache
+      - GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL=1
+      - GENESIS_ENABLE_P66_CUDAGRAPH_SIZE_FILTER=1
+      - GENESIS_ENABLE_P64_QWEN3CODER_MTP_STREAMING=1
+      - GENESIS_ENABLE_PN59_STREAMING_GDN=1
+      - GENESIS_ENABLE_PN34_WORKSPACE_LOCK_RELAX=1
+      - GENESIS_ENABLE_P98=1
+      - GENESIS_ENABLE_P40=${GENESIS_ENABLE_P40:-0}
+      - GENESIS_ENABLE_PN54=${GENESIS_ENABLE_PN54:-0}
+    shm_size: "16gb"
+    ipc: host
+    networks:
+      club3090-ipv6:
+        ipv6_address: ${IPv6_ADDRESS:-fd00::10}
+    healthcheck:
+      test: ["CMD-SHELL", "echo \"Hostname: $$(hostname)\" && curl -sf http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        pip install xxhash pandas scipy -q
+        if [ ! -f /usr/local/lib/python3.12/dist-packages/vllm/_genesis/patches/apply_all.py ]; then
+          echo "ERROR: Genesis patches missing" >&2
+          exit 1
+        fi
+        bash /etc/club3090/install-pr35936.sh
+        bash /etc/club3090/install-pr41800.sh
+        python3 -m vllm._genesis.patches.apply_all
+        python3 /patches/qwen3coder_tool_parser_deferred_commit.py
+        echo "========================================"
+        echo "  Club-3090 vLLM Server Starting"
+        echo "========================================"
+        echo "  Hostname: $$(hostname)"
+        echo "  IPv4: $$(hostname -I | awk '{print $1}')"
+        echo "  IPv6: $$(ip -6 addr show eth0 | grep 'inet6' | awk '{print $2}' | cut -d/ -f1)"
+        echo "  GPU: $$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
+        echo "  Model: qwen3.6-27b-autoround"
+        echo "  API: http://$$(hostname -I | awk '{print $1}'):8020/v1/chat/completions"
+        echo "========================================"
+        exec vllm serve ${VLLM_ENFORCE_EAGER:+--enforce-eager} "$$"
+      - --
+    command:
+      - --model
+      - /root/.cache/huggingface/qwen3.6-27b-autoround-int4
+      - --served-model-name
+      - qwen3.6-27b-autoround
+      - --quantization
+      - auto_round
+      - --dtype
+      - float16
+      - --tensor-parallel-size
+      - "${TP:-1}"
+      - --pipeline-parallel-size
+      - "${PP:-1}"
+      - --max-model-len
+      - "${MAX_MODEL_LEN:-48000}"
+      - --gpu-memory-utilization
+      - "${GPU_MEMORY_UTILIZATION:-0.92}"
+      - --max-num-seqs
+      - "1"
+      - --max-num-batched-tokens
+      - "4128"
+      - --kv-cache-dtype
+      - "${KV_CACHE_DTYPE:-turboquant_3bit_nc}"
+      - --trust-remote-code
+      - --chat-template
+      - /etc/qwen-froggeric-chat-template.jinja
+      - --reasoning-parser
+      - qwen3
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --enable-prefix-caching
+      - --enable-chunked-prefill
+      - --no-scheduler-reserve-full-isl
+      - --speculative-config
+      - '{"method":"mtp","num_speculative_tokens":3}'
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+networks:
+  club3090-ipv6:
+    driver: bridge
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: fd00::/112
+          gateway: fd00::1
