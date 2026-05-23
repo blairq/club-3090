@@ -123,7 +123,9 @@ EOF
   exit 0
 fi
 
-if ! curl -sf "${URL}/v1/models" >/dev/null; then
+AUTH_ARGS=()
+[ -n "${API_KEY:-}" ] && AUTH_ARGS=(-H "Authorization: Bearer ${API_KEY}")
+if ! curl -sf "${AUTH_ARGS[@]}" "${URL}/v1/models" >/dev/null; then
   echo "ERROR: service not reachable at ${URL}/v1/models" >&2
   echo "  Start with: cd compose && docker compose up -d" >&2
   exit 1
@@ -132,12 +134,12 @@ fi
 python3 - "$URL" "$MODEL" "$WARMUPS" "$RUNS" "$QUIET" "$ONLY" \
             "$CONTAINER" "$PP_MODE" "$PP_FALLBACK_TOKENS" "$PP_MAX_TOKENS" \
             "$PROMPT_NARR" "$MAX_TOKENS_NARR" \
-            "$PROMPT_CODE" "$MAX_TOKENS_CODE" << 'PYEOF'
+            "$PROMPT_CODE" "$MAX_TOKENS_CODE" "${API_KEY:-}" << 'PYEOF'
 import json, re, shutil, subprocess, sys, time, urllib.request, statistics as s
 
 (URL, MODEL, WARMUPS, RUNS, QUIET, ONLY,
  CONTAINER, PP_MODE, PP_FALLBACK_TOKENS, PP_MAX_TOKENS,
- PROMPT_NARR, MAX_NARR, PROMPT_CODE, MAX_CODE) = sys.argv[1:]
+ PROMPT_NARR, MAX_NARR, PROMPT_CODE, MAX_CODE, API_KEY) = sys.argv[1:]
 WARMUPS = int(WARMUPS); RUNS = int(RUNS); QUIET = int(QUIET) == 1
 MAX_NARR = int(MAX_NARR); MAX_CODE = int(MAX_CODE)
 PP_FALLBACK_TOKENS = int(PP_FALLBACK_TOKENS); PP_MAX_TOKENS = int(PP_MAX_TOKENS)
@@ -153,8 +155,11 @@ def run_once(prompt, max_tokens):
         "stream_options": {"include_usage": True},
         "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
     req = urllib.request.Request(f"{URL}/v1/chat/completions", data=body,
-                                 headers={"Content-Type": "application/json"})
+                                 headers=headers)
     t_send = time.time()
     ttft = None
     completion_tokens = 0
